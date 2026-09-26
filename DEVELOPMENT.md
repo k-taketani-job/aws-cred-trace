@@ -2,7 +2,8 @@
 
 ## Prerequisites
 
-- Go 1.25.13 or later
+- Go 1.25.13 or later for build and test
+- Go 1.26.8 or later for the complete quality-tool suite
 - Git
 
 Install the pinned quality tools:
