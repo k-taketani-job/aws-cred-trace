@@ -1,0 +1,29 @@
+# AWS and local secrets
+.aws/
+**/.aws/
+.env
+.env.*
+!.env.example
+/credentials
+/credentials.*
+*.credentials
+*.pem
+*.key
+/secrets/
+
+# Build and test artifacts
+/aws-cred-trace
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+/coverage/
+coverage.*
+
+# IDE and OS files
+.tools/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
