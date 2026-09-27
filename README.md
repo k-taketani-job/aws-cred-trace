@@ -10,9 +10,9 @@
 
 ## Project status
 
-Version 0.2.0 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
+Version 0.3.0 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
 
-Version 0.2.0 adds modern `sso_session` and legacy inline IAM Identity Center / SSO profiles to the existing environment, shared-file, profile-selection, reasoning, and optional STS verification support. The current development milestone adds one-hop AssumeRole profiles using `role_arn` and a direct `source_profile` backed by static or SSO credentials. Nested role chains and full `credential_process` support remain deferred.
+Version 0.3.0 adds one-hop AssumeRole profiles using `role_arn` and a direct `source_profile` backed by static or IAM Identity Center / SSO credentials. Nested role chains and full `credential_process` support remain deferred.
 
 ## Supported platforms
 

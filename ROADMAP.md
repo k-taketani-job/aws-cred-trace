@@ -18,7 +18,7 @@
 - Report missing or expired sessions without exposing token or credential material
 - Guarantee that `--no-sts` performs no credential retrieval or network authentication
 
-## Next milestone: Direct AssumeRole
+## v0.3.0: Direct AssumeRole
 
 - Trace one `role_arn` hop through a direct `source_profile`
 - Support static, modern SSO, and legacy SSO source profiles

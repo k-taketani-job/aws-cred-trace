@@ -115,9 +115,9 @@ The existing profile and credential precedence remains unchanged. A selected pro
 
 For v0.2.0, `--no-sts` is a strict offline mode after local configuration analysis. It guarantees no credential retrieval, SSO token refresh, SSO role credential request, STS request, browser or subprocess login, or ECS/EC2 metadata endpoint access. SSO session validity is not checked in this mode.
 
-## Direct AssumeRole with source_profile
+## v0.3.0 Direct AssumeRole with source_profile
 
-The next milestone supports one AssumeRole hop when the selected profile contains both `role_arn` and `source_profile`. The direct source profile must resolve to complete static credentials in a shared file or to a supported modern or legacy SSO profile. Analysis emits a selected `assume-role` finding and a separate selected `source-profile` finding without printing either profile name, the role ARN, external IDs, MFA values, or credential material.
+v0.3.0 supports one AssumeRole hop when the selected profile contains both `role_arn` and `source_profile`. The direct source profile must resolve to complete static credentials in a shared file or to a supported modern or legacy SSO profile. Analysis emits a selected `assume-role` finding and a separate selected `source-profile` finding without printing either profile name, the role ARN, external IDs, MFA values, or credential material.
 
 The existing profile selection and environment precedence rules remain unchanged. A supported higher-precedence environment or shared-credentials candidate shadows the role profile. With explicit `--profile`, environment credentials remain ignored. Actual source credential retrieval and `sts:AssumeRole` are delegated to AWS SDK for Go v2 only when identity verification is enabled; EC2 IMDS is explicitly disabled and SDK errors are sanitized.
 
