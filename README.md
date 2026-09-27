@@ -10,21 +10,39 @@
 
 ## Project status
 
-The local-analysis and optional STS identity-verification slices are implemented but not released.
+Version 0.1.0 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
 
-The planned v0.1 scope covers environment credentials, `~/.aws/config`, `~/.aws/credentials`, profile resolution through `--profile`, `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, or `default`, `selected` / `shadowed` / `ignored` reasoning, and effective identity verification with `sts:GetCallerIdentity`. Full SSO, complex AssumeRole chains, and full `credential_process` support are deferred.
+The v0.1 scope covers environment credentials, `~/.aws/config`, `~/.aws/credentials`, profile resolution through `--profile`, `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, or `default`, `selected` / `shadowed` / `ignored` reasoning, and effective identity verification with `sts:GetCallerIdentity`. Full SSO, complex AssumeRole chains, and full `credential_process` support are deferred.
 
 ## Supported platforms
 
 `aws-cred-trace` officially supports Windows, macOS, and Linux. CLI commands, status names, reasons, exit codes, and output structure are intended to remain consistent across all three platforms. Platform-specific shell behavior is not required.
 
-## Expected installation
+## Installation
 
-The first release is expected to provide GitHub release binaries and Go installation after the module path and version are published:
+Download the binary for your platform from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases), then run it directly:
+
+```powershell
+.\aws-cred-trace_windows_amd64.exe inspect --no-sts
+```
 
 ```console
-go install github.com/k-taketani-job/aws-cred-trace@v0.1.0
+chmod +x aws-cred-trace_darwin_arm64
+./aws-cred-trace_darwin_arm64 inspect --no-sts
 ```
+
+```console
+chmod +x aws-cred-trace_linux_amd64
+./aws-cred-trace_linux_amd64 inspect --no-sts
+```
+
+Alternatively, install with Go:
+
+```console
+go install github.com/k-taketani-job/aws-cred-trace@latest
+```
+
+Each release includes `checksums.txt`. Verify the downloaded binary with `Get-FileHash` on Windows, `shasum -a 256 -c checksums.txt` on macOS, or `sha256sum -c checksums.txt` on Linux.
 
 ## Usage
 
