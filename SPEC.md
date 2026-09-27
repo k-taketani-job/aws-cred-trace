@@ -106,3 +106,11 @@ Errors, debug output, and termination messages must not contain credential value
 - Detailed Web Identity, ECS, or EC2 Instance Metadata analysis
 - Creating, updating, storing, or repairing credentials
 - Exact behavioral emulation of every AWS CLI and AWS SDK version
+
+## v0.2.0 IAM Identity Center / SSO
+
+v0.2.0 adds analysis and credential construction for both `sso_session` profiles and legacy inline SSO profiles. The AWS SDK for Go v2 owns cached-token loading, supported token refresh, and role credential retrieval. The tool never prints cached token contents or credential values and never initiates `aws sso login`, opens a browser, or starts a login subprocess.
+
+The existing profile and credential precedence remains unchanged. A selected profile's complete static credentials take precedence over SSO configuration. Missing or expired SSO sessions do not change the selected provider; credential retrieval and identity verification fail with a sanitized error that requires the user to run login explicitly.
+
+For v0.2.0, `--no-sts` is a strict offline mode after local configuration analysis. It guarantees no credential retrieval, SSO token refresh, SSO role credential request, STS request, browser or subprocess login, or ECS/EC2 metadata endpoint access. SSO session validity is not checked in this mode.

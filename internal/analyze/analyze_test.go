@@ -270,11 +270,6 @@ func TestUnsupportedProvidersAreNotResolved(t *testing.T) {
 		wantType   string
 	}{
 		{
-			name:       "SSO",
-			configBody: "[profile example]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\nsso_account_id = example-account\nsso_role_name = example-role\n",
-			wantType:   "sso",
-		},
-		{
 			name:       "AssumeRole",
 			configBody: "[profile example]\nrole_arn = example-role\nsource_profile = source\n[profile source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n",
 			wantType:   "assume-role",
@@ -299,6 +294,90 @@ func TestUnsupportedProvidersAreNotResolved(t *testing.T) {
 				t.Fatalf("finding = %#v", finding)
 			}
 		})
+	}
+}
+
+func TestAnalyzeSelectsSSOProfiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		explicitProfile string
+		environment     map[string]string
+		configBody      string
+		wantReason      string
+	}{
+		{
+			name:        "modern SSO",
+			environment: map[string]string{"AWS_PROFILE": "example"},
+			configBody: "[profile example]\nsso_session = example-session\nsso_account_id = 000000000000\nsso_role_name = ExampleRole\n" +
+				"[sso-session example-session]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\n",
+			wantReason: "modern SSO profile selected",
+		},
+		{
+			name:            "legacy SSO with explicit profile",
+			explicitProfile: "example",
+			environment:     completeEnvironment("other"),
+			configBody:      legacySSOConfig("example"),
+			wantReason:      "legacy SSO profile selected",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			configPath, credentialsPath := writeSharedFiles(t, test.configBody, "")
+			result, err := Analyze(context.Background(), Options{
+				ExplicitProfile: test.explicitProfile,
+				Environment:     test.environment,
+				ConfigPath:      configPath,
+				CredentialsPath: credentialsPath,
+			})
+			if err != nil {
+				t.Fatalf("analyze: %v", err)
+			}
+			finding := findingForType(t, result, "sso")
+			if finding.State != StateSelected || finding.Reason != test.wantReason {
+				t.Fatalf("finding = %#v", finding)
+			}
+		})
+	}
+}
+
+func TestStaticCredentialsShadowSSO(t *testing.T) {
+	t.Parallel()
+
+	configPath, credentialsPath := writeSharedFiles(t, legacySSOConfig("example"), staticCredentials("example"))
+	result, err := Analyze(context.Background(), Options{
+		Environment:     map[string]string{"AWS_PROFILE": "example"},
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if finding := findingForSource(t, result, "shared-credentials"); finding.State != StateSelected {
+		t.Fatalf("static finding = %#v", finding)
+	}
+	if finding := findingForType(t, result, "sso"); finding.State != StateShadowed {
+		t.Fatalf("SSO finding = %#v", finding)
+	}
+}
+
+func TestSSOProfileRequiresAccountAndRole(t *testing.T) {
+	t.Parallel()
+
+	configBody := "[profile example]\nsso_session = example-session\n" +
+		"[sso-session example-session]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\n"
+	configPath, credentialsPath := writeSharedFiles(t, configBody, "")
+	_, err := Analyze(context.Background(), Options{
+		Environment:     map[string]string{"AWS_PROFILE": "example"},
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if !errors.Is(err, ErrInvalidSSOConfiguration) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidSSOConfiguration)
 	}
 }
 
@@ -365,6 +444,14 @@ func staticCredentials(profile string) string {
 	return "[" + profile + "]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\naws_session_token = example-session-token\n"
 }
 
+func legacySSOConfig(profile string) string {
+	return "[profile " + profile + "]\n" +
+		"sso_start_url = https://example.invalid/start\n" +
+		"sso_region = example-region\n" +
+		"sso_account_id = 000000000000\n" +
+		"sso_role_name = ExampleRole\n"
+}
+
 func findingForSource(t *testing.T, result Result, source string) Finding {
 	t.Helper()
 
@@ -374,5 +461,17 @@ func findingForSource(t *testing.T, result Result, source string) Finding {
 		}
 	}
 	t.Fatalf("finding for source %q not found", source)
+	return Finding{}
+}
+
+func findingForType(t *testing.T, result Result, findingType string) Finding {
+	t.Helper()
+
+	for _, finding := range result.Findings {
+		if finding.Type == findingType {
+			return finding
+		}
+	}
+	t.Fatalf("finding for type %q not found", findingType)
 	return Finding{}
 }

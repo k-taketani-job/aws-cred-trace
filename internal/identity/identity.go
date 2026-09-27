@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/k-taketani-job/aws-cred-trace/internal/credentials"
 )
 
 var (
@@ -21,6 +22,8 @@ var (
 	ErrUnauthorized = errors.New("STS verification failed: request is unauthorized")
 	// ErrNetwork indicates that STS could not be reached.
 	ErrNetwork = errors.New("STS verification failed: network request failed")
+	// ErrSSOSession indicates that the selected cached SSO session cannot provide credentials.
+	ErrSSOSession = errors.New("STS verification failed: SSO session is unavailable; run aws sso login explicitly")
 	// ErrVerification indicates another sanitized STS failure.
 	ErrVerification = errors.New("STS verification failed")
 )
@@ -74,6 +77,9 @@ func Format(result Result) string {
 }
 
 func classifyError(err error) error {
+	if errors.Is(err, credentials.ErrSSOSessionUnavailable) {
+		return ErrSSOSession
+	}
 	var apiError smithy.APIError
 	if errors.As(err, &apiError) {
 		switch apiError.ErrorCode() {
