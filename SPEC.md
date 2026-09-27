@@ -1,4 +1,4 @@
-# v0.1 Specification
+# Specification
 
 ## Inputs
 
@@ -81,8 +81,8 @@ By default, the command calls `sts:GetCallerIdentity` with supported credentials
 
 ## Error behavior
 
-- A missing default shared file is treated as absent, matching the SDK. An explicitly configured path that cannot be read, or an existing file that cannot be parsed, is an error: print its path and a sanitized cause to standard error; exit `1`.
-- Explicit `--profile` not found, or a shared profile required for credential resolution not found: print the profile name; exit `1`. A missing `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` target does not override otherwise selected environment credentials.
+- A missing default shared file is treated as absent, matching the SDK. An explicitly configured path that cannot be read, or an existing file that cannot be parsed, produces a sanitized error without exposing filesystem paths; exit `1`.
+- Explicit `--profile` not found, or a shared profile required for credential resolution not found: report the condition without printing the profile name; exit `1`. A missing `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` target does not override otherwise selected environment credentials.
 - Unsupported provider required for resolution: identify its kind without executing it; exit `1`.
 - Credentials cannot be resolved: print candidate states and reasons; exit `1`.
 - STS request or its SDK configuration fails: retain provider analysis, report identity as `unverified`, print a sanitized cause to standard error; exit `1`.
@@ -114,3 +114,27 @@ v0.2.0 adds analysis and credential construction for both `sso_session` profiles
 The existing profile and credential precedence remains unchanged. A selected profile's complete static credentials take precedence over SSO configuration. Missing or expired SSO sessions do not change the selected provider; credential retrieval and identity verification fail with a sanitized error that requires the user to run login explicitly.
 
 For v0.2.0, `--no-sts` is a strict offline mode after local configuration analysis. It guarantees no credential retrieval, SSO token refresh, SSO role credential request, STS request, browser or subprocess login, or ECS/EC2 metadata endpoint access. SSO session validity is not checked in this mode.
+
+## Direct AssumeRole with source_profile
+
+The next milestone supports one AssumeRole hop when the selected profile contains both `role_arn` and `source_profile`. The direct source profile must resolve to complete static credentials in a shared file or to a supported modern or legacy SSO profile. Analysis emits a selected `assume-role` finding and a separate selected `source-profile` finding without printing either profile name, the role ARN, external IDs, MFA values, or credential material.
+
+The existing profile selection and environment precedence rules remain unchanged. A supported higher-precedence environment or shared-credentials candidate shadows the role profile. With explicit `--profile`, environment credentials remain ignored. Actual source credential retrieval and `sts:AssumeRole` are delegated to AWS SDK for Go v2 only when identity verification is enabled; EC2 IMDS is explicitly disabled and SDK errors are sanitized.
+
+Only a direct source profile is supported. Nested and cyclic role chains, `credential_source`, MFA prompting, Web Identity, `credential_process`, ECS credentials, and EC2 Instance Metadata credentials are rejected without executing an external provider. With `--no-sts`, analysis remains local: it does not retrieve source credentials, refresh SSO, request SSO role credentials, call AssumeRole or GetCallerIdentity, start a browser or subprocess, or access metadata endpoints.
+
+Example local analysis:
+
+```text
+CREDENTIAL_SOURCE_ANALYSIS
+PROFILE_SOURCE  --profile
+STATUS    SOURCE              TYPE                 REASON
+ignored   environment         static               credential variables are not set
+ignored   shared-credentials  static               selected profile not found
+selected  shared-config       assume-role          role_arn with direct source_profile selected
+selected  source-profile      sso                  modern SSO source_profile selected
+
+IDENTITY_VERIFICATION
+STATUS   skipped
+REASON   STS verification disabled
+```

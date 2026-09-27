@@ -43,6 +43,7 @@ func TestVerify(t *testing.T) {
 		{name: "unauthorized", err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "sensitive detail"}, wantStatus: "unverified", wantError: ErrUnauthorized},
 		{name: "network failure", err: fakeNetworkError{}, wantStatus: "unverified", wantError: ErrNetwork},
 		{name: "SSO session unavailable", err: credentials.ErrSSOSessionUnavailable, wantStatus: "unverified", wantError: ErrSSOSession},
+		{name: "AssumeRole unavailable", err: credentials.ErrAssumeRoleUnavailable, wantStatus: "unverified", wantError: ErrAssumeRole},
 		{name: "other service error", err: &smithy.GenericAPIError{Code: "ExampleFailure", Message: "sensitive detail"}, wantStatus: "unverified", wantError: ErrVerification},
 		{name: "missing response fields", output: &sts.GetCallerIdentityOutput{}, wantStatus: "unverified", wantError: ErrVerification},
 	}

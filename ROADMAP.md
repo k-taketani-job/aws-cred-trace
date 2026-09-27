@@ -18,9 +18,16 @@
 - Report missing or expired sessions without exposing token or credential material
 - Guarantee that `--no-sts` performs no credential retrieval or network authentication
 
-## After v0.2.0: Provider expansion
+## Next milestone: Direct AssumeRole
 
-- Trace AssumeRole and `source_profile` chains
+- Trace one `role_arn` hop through a direct `source_profile`
+- Support static, modern SSO, and legacy SSO source profiles
+- Reject nested or cyclic role chains and unsupported providers safely
+- Preserve the strict offline guarantees of `--no-sts`
+
+## Later provider expansion
+
+- Evaluate bounded nested AssumeRole chains
 - Diagnose `credential_process` safely
 - Add Web Identity, ECS, and EC2 Instance Metadata analysis
 

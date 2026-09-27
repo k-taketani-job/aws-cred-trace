@@ -261,7 +261,160 @@ func TestCredentialProcessIsNotExecuted(t *testing.T) {
 	}
 }
 
-func TestUnsupportedProvidersAreNotResolved(t *testing.T) {
+func TestAnalyzeAssumeRoleSourceProfiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		configBody       string
+		credentialsBody  string
+		wantSourceType   string
+		wantSourceReason string
+	}{
+		{
+			name:             "static source in credentials file",
+			configBody:       roleConfig("source"),
+			credentialsBody:  staticCredentials("source"),
+			wantSourceType:   "static",
+			wantSourceReason: "source_profile resolves via shared-credentials",
+		},
+		{
+			name:             "static source in config file",
+			configBody:       roleConfig("source") + staticConfig("source"),
+			wantSourceType:   "static",
+			wantSourceReason: "source_profile resolves via shared-config",
+		},
+		{
+			name: "modern SSO source",
+			configBody: roleConfig("source") +
+				"[profile source]\nsso_session = example-session\nsso_account_id = 000000000000\nsso_role_name = ExampleRole\n" +
+				"[sso-session example-session]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\n",
+			wantSourceType:   "sso",
+			wantSourceReason: "modern SSO source_profile selected",
+		},
+		{
+			name:             "legacy SSO source",
+			configBody:       roleConfig("source") + legacySSOConfig("source"),
+			wantSourceType:   "sso",
+			wantSourceReason: "legacy SSO source_profile selected",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			configPath, credentialsPath := writeSharedFiles(t, test.configBody, test.credentialsBody)
+			result, err := Analyze(context.Background(), Options{
+				ExplicitProfile: "example",
+				Environment:     completeEnvironment("other"),
+				ConfigPath:      configPath,
+				CredentialsPath: credentialsPath,
+			})
+			if err != nil {
+				t.Fatalf("analyze: %v", err)
+			}
+			role := findingForType(t, result, "assume-role")
+			if role.State != StateSelected || role.Reason != "role_arn with direct source_profile selected" {
+				t.Fatalf("role finding = %#v", role)
+			}
+			source := findingForSource(t, result, "source-profile")
+			if source.State != StateSelected || source.Type != test.wantSourceType || source.Reason != test.wantSourceReason {
+				t.Fatalf("source finding = %#v", source)
+			}
+		})
+	}
+}
+
+func TestAssumeRoleProfileSelectionSources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		explicit    string
+		environment map[string]string
+		wantSource  string
+	}{
+		{name: "explicit profile", explicit: "example", environment: completeEnvironment("other"), wantSource: "--profile"},
+		{name: "AWS_PROFILE", environment: map[string]string{"AWS_PROFILE": "example", "AWS_DEFAULT_PROFILE": "other"}, wantSource: "AWS_PROFILE"},
+		{name: "AWS_DEFAULT_PROFILE", environment: map[string]string{"AWS_DEFAULT_PROFILE": "example"}, wantSource: "AWS_DEFAULT_PROFILE"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			configPath, credentialsPath := writeSharedFiles(t, roleConfig("source")+staticConfig("source"), "")
+			result, err := Analyze(context.Background(), Options{
+				ExplicitProfile: test.explicit,
+				Environment:     test.environment,
+				ConfigPath:      configPath,
+				CredentialsPath: credentialsPath,
+			})
+			if err != nil {
+				t.Fatalf("analyze: %v", err)
+			}
+			if result.ProfileSource != test.wantSource {
+				t.Fatalf("profile source = %q, want %q", result.ProfileSource, test.wantSource)
+			}
+			if finding := findingForType(t, result, "assume-role"); finding.State != StateSelected {
+				t.Fatalf("finding = %#v", finding)
+			}
+		})
+	}
+}
+
+func TestAnalyzeRejectsUnsupportedAssumeRoleConfigurations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configBody string
+		wantError  error
+	}{
+		{name: "missing source_profile", configBody: "[profile example]\nrole_arn = example-role\n", wantError: ErrInvalidAssumeRoleConfiguration},
+		{name: "missing role_arn", configBody: "[profile example]\nsource_profile = source\n" + staticConfig("source"), wantError: ErrInvalidAssumeRoleConfiguration},
+		{name: "missing source definition", configBody: roleConfig("missing"), wantError: ErrInvalidAssumeRoleConfiguration},
+		{name: "self cycle", configBody: roleConfig("example"), wantError: ErrUnsupportedAssumeRoleChain},
+		{name: "multi-profile cycle", configBody: roleConfig("source") + "[profile source]\nrole_arn = nested-role\nsource_profile = example\n", wantError: ErrUnsupportedAssumeRoleChain},
+		{name: "nested role", configBody: roleConfig("source") + "[profile source]\nrole_arn = nested-role\nsource_profile = base\n" + staticConfig("base"), wantError: ErrUnsupportedAssumeRoleChain},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			configPath, credentialsPath := writeSharedFiles(t, test.configBody, "")
+			_, err := Analyze(context.Background(), Options{
+				Environment:     map[string]string{"AWS_PROFILE": "example"},
+				ConfigPath:      configPath,
+				CredentialsPath: credentialsPath,
+			})
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("error = %v, want %v", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestAnalyzeDoesNotResolveUnsupportedAssumeRoleSources(t *testing.T) {
+	t.Parallel()
+
+	configPath, credentialsPath := writeSharedFiles(t,
+		roleConfig("source")+"[profile source]\ncredential_process = must-not-run\n", "")
+	result, err := Analyze(context.Background(), Options{
+		Environment:     map[string]string{"AWS_PROFILE": "example"},
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if !errors.Is(err, ErrUnsupportedProvider) {
+		t.Fatalf("error = %v, want %v", err, ErrUnsupportedProvider)
+	}
+	finding := findingForSource(t, result, "shared-config")
+	if finding.Type != "source-profile-credential-process" || finding.State != StateIgnored {
+		t.Fatalf("finding = %#v", finding)
+	}
+}
+
+func TestAnalyzeRejectsDeferredAssumeRoleOptions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -270,16 +423,20 @@ func TestUnsupportedProvidersAreNotResolved(t *testing.T) {
 		wantType   string
 	}{
 		{
-			name:       "AssumeRole",
-			configBody: "[profile example]\nrole_arn = example-role\nsource_profile = source\n[profile source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n",
-			wantType:   "assume-role",
+			name:       "credential_source",
+			configBody: "[profile example]\nrole_arn = example-role\ncredential_source = Ec2InstanceMetadata\n",
+			wantType:   "credential-source",
+		},
+		{
+			name:       "MFA prompting",
+			configBody: roleConfig("source") + "mfa_serial = example-mfa\n" + staticConfig("source"),
+			wantType:   "assume-role-mfa",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-
 			configPath, credentialsPath := writeSharedFiles(t, test.configBody, "")
 			result, err := Analyze(context.Background(), Options{
 				Environment:     map[string]string{"AWS_PROFILE": "example"},
@@ -294,6 +451,43 @@ func TestUnsupportedProvidersAreNotResolved(t *testing.T) {
 				t.Fatalf("finding = %#v", finding)
 			}
 		})
+	}
+}
+
+func TestEnvironmentCredentialsShadowAssumeRole(t *testing.T) {
+	t.Parallel()
+
+	configPath, credentialsPath := writeSharedFiles(t, roleConfig("missing"), "")
+	result, err := Analyze(context.Background(), Options{
+		Environment:     completeEnvironment("example"),
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if finding := findingForType(t, result, "assume-role"); finding.State != StateShadowed {
+		t.Fatalf("finding = %#v", finding)
+	}
+}
+
+func TestSharedCredentialsShadowAssumeRole(t *testing.T) {
+	t.Parallel()
+
+	configPath, credentialsPath := writeSharedFiles(t, roleConfig("source"), staticCredentials("example"))
+	result, err := Analyze(context.Background(), Options{
+		Environment:     map[string]string{"AWS_PROFILE": "example"},
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if finding := findingForSource(t, result, "shared-credentials"); finding.State != StateSelected {
+		t.Fatalf("credentials finding = %#v", finding)
+	}
+	if finding := findingForType(t, result, "assume-role"); finding.State != StateShadowed {
+		t.Fatalf("role finding = %#v", finding)
 	}
 }
 
@@ -402,6 +596,33 @@ func TestFormatDoesNotExposeValues(t *testing.T) {
 	}
 }
 
+func TestAssumeRoleFormatDoesNotExposeConfigurationValues(t *testing.T) {
+	t.Parallel()
+
+	config := "[profile private-role]\nrole_arn = private-role-arn\nsource_profile = private-source\nexternal_id = private-external-id\n" +
+		"[profile private-source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n"
+	configPath, credentialsPath := writeSharedFiles(t, config, "")
+	result, err := Analyze(context.Background(), Options{
+		ExplicitProfile: "private-role",
+		Environment:     map[string]string{},
+		ConfigPath:      configPath,
+		CredentialsPath: credentialsPath,
+	})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	output := Format(result)
+	for _, forbidden := range []string{
+		"private-role", "private-source", "private-role-arn", "private-external-id",
+		"example-access-key", "example-secret-key",
+	} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("output contains forbidden value %q: %s", forbidden, output)
+		}
+	}
+}
+
 func writeSharedFiles(t *testing.T, configBody, credentialsBody string) (string, string) {
 	t.Helper()
 
@@ -450,6 +671,10 @@ func legacySSOConfig(profile string) string {
 		"sso_region = example-region\n" +
 		"sso_account_id = 000000000000\n" +
 		"sso_role_name = ExampleRole\n"
+}
+
+func roleConfig(sourceProfile string) string {
+	return "[profile example]\nrole_arn = example-role\nsource_profile = " + sourceProfile + "\n"
 }
 
 func findingForSource(t *testing.T, result Result, source string) Finding {

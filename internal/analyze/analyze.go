@@ -23,11 +23,15 @@ var (
 	// ErrNoCredentials indicates that no supported credential source was found.
 	ErrNoCredentials = errors.New("no supported credentials found")
 	// ErrUnsupportedProvider indicates that resolving credentials would require an unsupported provider.
-	ErrUnsupportedProvider = errors.New("credential resolution requires a provider unsupported in v0.2")
+	ErrUnsupportedProvider = errors.New("credential resolution requires an unsupported provider")
 	// ErrProfileNotFound indicates that a selected named profile is absent from both shared files.
 	ErrProfileNotFound = errors.New("selected profile was not found")
 	// ErrInvalidSSOConfiguration indicates that the selected SSO profile cannot provide AWS credentials.
 	ErrInvalidSSOConfiguration = errors.New("selected SSO profile is incomplete or invalid")
+	// ErrInvalidAssumeRoleConfiguration indicates that a role profile or its source_profile is incomplete.
+	ErrInvalidAssumeRoleConfiguration = errors.New("selected AssumeRole profile is incomplete or invalid")
+	// ErrUnsupportedAssumeRoleChain indicates that the selected profile requires more than one role hop.
+	ErrUnsupportedAssumeRoleChain = errors.New("nested or cyclic AssumeRole chains are unsupported")
 )
 
 // Finding is a value-free explanation of one credential source.
@@ -109,8 +113,14 @@ func Analyze(ctx context.Context, options Options) (Result, error) {
 		result.Findings = append(result.Findings, invalidFileFinding("shared-credentials"))
 		return result, err
 	}
+	credentialsFinding, credentialsSelected := staticFinding(
+		"shared-credentials",
+		credentials,
+		environmentSelected,
+		"environment credentials take precedence",
+	)
 
-	sharedConfig, err := loadSharedFile(ctx, options.ConfigPath, profile, true)
+	sharedConfig, err := loadConfigFile(ctx, options, profile, environmentSelected || credentialsSelected)
 	if err != nil {
 		result.Findings = append(result.Findings, invalidFileFinding("shared-config"))
 		return result, err
@@ -120,12 +130,6 @@ func Analyze(ctx context.Context, options Options) (Result, error) {
 		result.Region = sharedConfig.region
 	}
 
-	credentialsFinding, credentialsSelected := staticFinding(
-		"shared-credentials",
-		credentials,
-		environmentSelected,
-		"environment credentials take precedence",
-	)
 	result.Findings = append(result.Findings, credentialsFinding)
 
 	configFindings, configSelected := configFileFindings(sharedConfig, environmentSelected, credentialsSelected)
@@ -181,8 +185,117 @@ type fileCandidate struct {
 	static      bool
 	sso         bool
 	ssoMode     string
+	assumeRole  bool
+	roleSource  string
+	roleType    string
+	roleMode    string
 	unsupported string
 	region      string
+}
+
+func loadConfigFile(ctx context.Context, options Options, profile string, higherSelected bool) (fileCandidate, error) {
+	_, err := os.Stat(options.ConfigPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileCandidate{}, nil
+	}
+	if err != nil {
+		return fileCandidate{}, errors.New("shared AWS file cannot be read")
+	}
+
+	var shared awsconfig.SharedConfig
+	if higherSelected {
+		shared, err = loadSharedConfig(ctx, options.ConfigPath, profile, true)
+	} else {
+		shared, err = loadMergedConfig(ctx, options, profile)
+	}
+	if err != nil {
+		var assumeRoleError awsconfig.SharedConfigAssumeRoleError
+		if errors.As(err, &assumeRoleError) {
+			candidate := fileCandidate{exists: true, profile: true, assumeRole: true}
+			if higherSelected {
+				return candidate, nil
+			}
+			if assumeRoleError.Profile == profile {
+				return candidate, ErrUnsupportedAssumeRoleChain
+			}
+			return candidate, ErrInvalidAssumeRoleConfiguration
+		}
+		var requiresARN awsconfig.CredentialRequiresARNError
+		if errors.As(err, &requiresARN) {
+			return fileCandidate{exists: true, profile: true, assumeRole: true}, ErrInvalidAssumeRoleConfiguration
+		}
+		var profileNotFound awsconfig.SharedConfigProfileNotExistError
+		if errors.As(err, &profileNotFound) {
+			return fileCandidate{exists: true}, nil
+		}
+		return fileCandidate{}, errors.New("shared AWS file is invalid for the selected profile")
+	}
+
+	candidate := fileCandidate{
+		exists:  true,
+		profile: true,
+		static:  shared.Credentials.HasKeys(),
+		region:  shared.Region,
+	}
+	candidate.sso, candidate.ssoMode = ssoType(shared)
+	if candidate.sso && (shared.SSOAccountID == "" || shared.SSORoleName == "") {
+		return candidate, ErrInvalidSSOConfiguration
+	}
+	candidate.unsupported = unsupportedType(shared)
+	if shared.RoleARN == "" && shared.SourceProfileName == "" {
+		return candidate, nil
+	}
+	if candidate.unsupported != "" {
+		return candidate, nil
+	}
+
+	candidate.assumeRole = true
+	candidate.unsupported = ""
+	if shared.RoleARN == "" || shared.SourceProfileName == "" || shared.Source == nil {
+		return candidate, ErrInvalidAssumeRoleConfiguration
+	}
+	if shared.MFASerial != "" {
+		candidate.unsupported = "assume-role-mfa"
+		return candidate, nil
+	}
+	if shared.Source.RoleARN != "" || shared.Source.SourceProfileName != "" {
+		return candidate, ErrUnsupportedAssumeRoleChain
+	}
+	if sourceUnsupported := unsupportedType(*shared.Source); sourceUnsupported != "" {
+		candidate.unsupported = "source-profile-" + sourceUnsupported
+		return candidate, nil
+	}
+
+	if shared.Source.Credentials.HasKeys() {
+		candidate.roleSource = staticSource(ctx, options, shared.SourceProfileName)
+		candidate.roleType = "static"
+		return candidate, nil
+	}
+	if sourceSSO, mode := ssoType(*shared.Source); sourceSSO {
+		if shared.Source.SSOAccountID == "" || shared.Source.SSORoleName == "" {
+			return candidate, ErrInvalidSSOConfiguration
+		}
+		candidate.roleSource = "shared-config"
+		candidate.roleType = "sso"
+		candidate.roleMode = mode
+		return candidate, nil
+	}
+	return candidate, ErrInvalidAssumeRoleConfiguration
+}
+
+func loadMergedConfig(ctx context.Context, options Options, profile string) (awsconfig.SharedConfig, error) {
+	return awsconfig.LoadSharedConfigProfile(ctx, profile, func(loadOptions *awsconfig.LoadSharedConfigOptions) {
+		loadOptions.ConfigFiles = []string{options.ConfigPath}
+		loadOptions.CredentialsFiles = []string{options.CredentialsPath}
+	})
+}
+
+func staticSource(ctx context.Context, options Options, profile string) string {
+	shared, err := loadSharedConfig(ctx, options.CredentialsPath, profile, false)
+	if err == nil && shared.Credentials.HasKeys() {
+		return "shared-credentials"
+	}
+	return "shared-config"
 }
 
 func loadSharedFile(ctx context.Context, path, profile string, configFile bool) (fileCandidate, error) {
@@ -239,8 +352,8 @@ func unsupportedType(shared awsconfig.SharedConfig) string {
 	switch {
 	case shared.CredentialProcess != "":
 		return "credential-process"
-	case shared.RoleARN != "" || shared.SourceProfileName != "" || shared.CredentialSource != "":
-		return "assume-role"
+	case shared.CredentialSource != "":
+		return "credential-source"
 	case shared.WebIdentityTokenFile != "":
 		return "web-identity"
 	default:
@@ -275,6 +388,39 @@ func staticFinding(source string, candidate fileCandidate, higherSelected bool, 
 }
 
 func configFileFindings(candidate fileCandidate, environmentSelected, credentialsSelected bool) ([]Finding, bool) {
+	higherSelected := environmentSelected || credentialsSelected
+	reason := "shared credentials file takes precedence"
+	if environmentSelected {
+		reason = "environment credentials take precedence"
+	}
+	if candidate.assumeRole {
+		if higherSelected {
+			return []Finding{{
+				State:  StateShadowed,
+				Source: "shared-config",
+				Type:   "assume-role",
+				Reason: reason,
+			}}, false
+		}
+		if candidate.unsupported != "" {
+			return []Finding{{
+				State:  StateIgnored,
+				Source: "shared-config",
+				Type:   candidate.unsupported,
+				Reason: "unsupported; not executed",
+			}}, false
+		}
+		roleReason := "role_arn with direct source_profile selected"
+		sourceReason := "source_profile resolves via " + candidate.roleSource
+		if candidate.roleType == "sso" {
+			sourceReason = candidate.roleMode + " SSO source_profile selected"
+		}
+		return []Finding{
+			{State: StateSelected, Source: "shared-config", Type: "assume-role", Reason: roleReason},
+			{State: StateSelected, Source: "source-profile", Type: candidate.roleType, Reason: sourceReason},
+		}, true
+	}
+
 	if candidate.unsupported != "" && !candidate.static {
 		return []Finding{{
 			State:  StateIgnored,
@@ -284,11 +430,6 @@ func configFileFindings(candidate fileCandidate, environmentSelected, credential
 		}}, false
 	}
 
-	higherSelected := environmentSelected || credentialsSelected
-	reason := "shared credentials file takes precedence"
-	if environmentSelected {
-		reason = "environment credentials take precedence"
-	}
 	staticResult, staticSelected := staticFinding("shared-config", candidate, higherSelected, reason)
 	if !candidate.sso {
 		return []Finding{staticResult}, staticSelected
