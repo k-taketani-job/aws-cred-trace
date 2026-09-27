@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release artifacts
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_windows_amd64.exe .
+          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_windows_arm64.exe .
+          GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_darwin_amd64 .
+          GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_darwin_arm64 .
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_linux_amd64 .
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_linux_arm64 .
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum aws-cred-trace_* > checksums.txt
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
