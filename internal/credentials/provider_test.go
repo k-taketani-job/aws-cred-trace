@@ -53,6 +53,61 @@ func TestProviderConstructsSDKSSOProvidersWithoutRetrieval(t *testing.T) {
 	}
 }
 
+func TestProviderConstructsSDKAssumeRoleProvidersWithoutRetrieval(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      string
+		credentials string
+	}{
+		{
+			name:        "static source",
+			config:      "[profile role]\nrole_arn = example-role\nsource_profile = source\n",
+			credentials: "[source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n",
+		},
+		{
+			name: "modern SSO source",
+			config: "[profile role]\nrole_arn = example-role\nsource_profile = source\n" +
+				"[profile source]\nsso_session = example-session\nsso_account_id = 000000000000\nsso_role_name = ExampleRole\n" +
+				"[sso-session example-session]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\n",
+		},
+		{
+			name: "legacy SSO source",
+			config: "[profile role]\nrole_arn = example-role\nsource_profile = source\n" +
+				"[profile source]\nsso_start_url = https://example.invalid/start\nsso_region = example-region\n" +
+				"sso_account_id = 000000000000\nsso_role_name = ExampleRole\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config")
+			credentialsPath := filepath.Join(root, "credentials")
+			if err := os.WriteFile(configPath, []byte(test.config), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if test.credentials != "" {
+				if err := os.WriteFile(credentialsPath, []byte(test.credentials), 0o600); err != nil {
+					t.Fatalf("write credentials: %v", err)
+				}
+			}
+			options := analyze.Options{
+				ExplicitProfile: "role",
+				Environment:     map[string]string{},
+				ConfigPath:      configPath,
+				CredentialsPath: credentialsPath,
+			}
+			result, err := analyze.Analyze(context.Background(), options)
+			if err != nil {
+				t.Fatalf("analyze: %v", err)
+			}
+			if _, err := Provider(context.Background(), options, result); err != nil {
+				t.Fatalf("provider: %v", err)
+			}
+		})
+	}
+}
+
 type fakeProvider struct {
 	credentials aws.Credentials
 	err         error
@@ -133,6 +188,57 @@ func TestSSOProviderSanitizesRetrievalFailure(t *testing.T) {
 	}
 }
 
+func TestProviderConstructsAssumeRoleWithoutRetrievingCredentials(t *testing.T) {
+	underlying := &fakeProvider{credentials: aws.Credentials{AccessKeyID: "example", SecretAccessKey: "example"}}
+	provider, err := providerWithLoader(
+		context.Background(),
+		analyze.Options{ConfigPath: "config-path", CredentialsPath: "credentials-path"},
+		selectedAssumeRoleResult(),
+		func(_ context.Context, optionFns ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+			options := awsconfig.LoadOptions{}
+			for _, option := range optionFns {
+				if optionErr := option(&options); optionErr != nil {
+					t.Fatalf("apply load option: %v", optionErr)
+				}
+			}
+			if options.EC2IMDSClientEnableState != imds.ClientDisabled {
+				t.Fatalf("IMDS state = %v, want disabled", options.EC2IMDSClientEnableState)
+			}
+			if options.RetryMaxAttempts != 2 {
+				t.Fatalf("retry max attempts = %d, want 2", options.RetryMaxAttempts)
+			}
+			return aws.Config{Credentials: underlying}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	if underlying.calls != 0 {
+		t.Fatalf("retrieval calls = %d, want 0", underlying.calls)
+	}
+	if _, err := provider.Retrieve(context.Background()); err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+}
+
+func TestAssumeRoleProviderSanitizesRetrievalFailure(t *testing.T) {
+	underlying := &fakeProvider{err: errors.New("private role ARN and source credentials must not escape")}
+	provider, err := providerWithLoader(
+		context.Background(),
+		analyze.Options{},
+		selectedAssumeRoleResult(),
+		func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+			return aws.Config{Credentials: underlying}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	if _, err := provider.Retrieve(context.Background()); !errors.Is(err, ErrAssumeRoleUnavailable) {
+		t.Fatalf("error = %v, want %v", err, ErrAssumeRoleUnavailable)
+	}
+}
+
 func selectedSSOResult() analyze.Result {
 	return analyze.Result{
 		Profile: "example",
@@ -140,6 +246,17 @@ func selectedSSOResult() analyze.Result {
 			State:  analyze.StateSelected,
 			Source: "shared-config",
 			Type:   "sso",
+		}},
+	}
+}
+
+func selectedAssumeRoleResult() analyze.Result {
+	return analyze.Result{
+		Profile: "example",
+		Findings: []analyze.Finding{{
+			State:  analyze.StateSelected,
+			Source: "shared-config",
+			Type:   "assume-role",
 		}},
 	}
 }

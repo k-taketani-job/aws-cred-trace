@@ -16,6 +16,8 @@ var (
 	ErrUnavailable = errors.New("selected credentials are unavailable")
 	// ErrSSOSessionUnavailable indicates that AWS SDK for Go v2 could not use the cached SSO session.
 	ErrSSOSessionUnavailable = errors.New("selected SSO session is unavailable; run aws sso login explicitly")
+	// ErrAssumeRoleUnavailable indicates that the SDK could not resolve the selected role credentials.
+	ErrAssumeRoleUnavailable = errors.New("selected AssumeRole credentials are unavailable")
 )
 
 type defaultConfigLoader func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error)
@@ -36,18 +38,19 @@ func providerWithLoader(
 		return nil, ErrUnavailable
 	}
 
-	if selected.Type == "sso" {
+	if selected.Type == "sso" || selected.Type == "assume-role" {
 		cfg, err := load(
 			ctx,
 			awsconfig.WithSharedConfigProfile(result.Profile),
 			awsconfig.WithSharedConfigFiles([]string{options.ConfigPath}),
 			awsconfig.WithSharedCredentialsFiles([]string{options.CredentialsPath}),
 			awsconfig.WithEC2IMDSClientEnableState(imds.ClientDisabled),
+			awsconfig.WithRetryMaxAttempts(2),
 		)
 		if err != nil || cfg.Credentials == nil {
 			return nil, ErrUnavailable
 		}
-		return safeSSOProvider{provider: cfg.Credentials}, nil
+		return safeSDKProvider{provider: cfg.Credentials, providerType: selected.Type}, nil
 	}
 
 	credentials, err := staticCredentials(ctx, options, result, selected.Source)
@@ -105,13 +108,17 @@ func loadSharedConfig(ctx context.Context, path, profile string, configFile bool
 	})
 }
 
-type safeSSOProvider struct {
-	provider aws.CredentialsProvider
+type safeSDKProvider struct {
+	provider     aws.CredentialsProvider
+	providerType string
 }
 
-func (provider safeSSOProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+func (provider safeSDKProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
 	credentials, err := provider.provider.Retrieve(ctx)
 	if err != nil {
+		if provider.providerType == "assume-role" {
+			return aws.Credentials{}, ErrAssumeRoleUnavailable
+		}
 		return aws.Credentials{}, ErrSSOSessionUnavailable
 	}
 	return credentials, nil

@@ -24,6 +24,8 @@ var (
 	ErrNetwork = errors.New("STS verification failed: network request failed")
 	// ErrSSOSession indicates that the selected cached SSO session cannot provide credentials.
 	ErrSSOSession = errors.New("STS verification failed: SSO session is unavailable; run aws sso login explicitly")
+	// ErrAssumeRole indicates that the selected role could not provide credentials.
+	ErrAssumeRole = errors.New("STS verification failed: AssumeRole credentials are unavailable")
 	// ErrVerification indicates another sanitized STS failure.
 	ErrVerification = errors.New("STS verification failed")
 )
@@ -79,6 +81,9 @@ func Format(result Result) string {
 func classifyError(err error) error {
 	if errors.Is(err, credentials.ErrSSOSessionUnavailable) {
 		return ErrSSOSession
+	}
+	if errors.Is(err, credentials.ErrAssumeRoleUnavailable) {
+		return ErrAssumeRole
 	}
 	var apiError smithy.APIError
 	if errors.As(err, &apiError) {

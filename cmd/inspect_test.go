@@ -92,6 +92,94 @@ func TestInspectNoSTSSkipsAllSSOCredentialActivity(t *testing.T) {
 	}
 }
 
+func TestInspectNoSTSSkipsAllAssumeRoleCredentialActivity(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config")
+	config := "[profile role]\nrole_arn = example-role\nsource_profile = source\n" +
+		"[profile source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", configPath)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(root, "missing-credentials"))
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_PROFILE", "role")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
+
+	called := false
+	command := newInspectCommandWithVerifier(func(context.Context, analyze.Options, analyze.Result) (identity.Result, error) {
+		called = true
+		return identity.Result{}, errors.New("must not be called")
+	})
+	output := &bytes.Buffer{}
+	command.SetOut(output)
+	command.SetErr(output)
+	command.SetArgs([]string{"--no-sts"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if called {
+		t.Fatal("credential construction, AssumeRole, or STS verifier was called")
+	}
+	for _, expected := range []string{"selected  shared-config", "assume-role", "selected  source-profile", "STATUS   skipped"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("output does not contain %q: %s", expected, output.String())
+		}
+	}
+}
+
+func TestInspectVerifiesIdentityAfterAssumeRoleSelection(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config")
+	config := "[profile role]\nrole_arn = example-role\nsource_profile = source\n" +
+		"[profile source]\naws_access_key_id = example-access-key\naws_secret_access_key = example-secret-key\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", configPath)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(root, "missing-credentials"))
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_PROFILE", "role")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
+
+	called := false
+	command := newInspectCommandWithVerifier(func(_ context.Context, _ analyze.Options, result analyze.Result) (identity.Result, error) {
+		called = true
+		for _, finding := range result.Findings {
+			if finding.State == analyze.StateSelected && finding.Type == "assume-role" {
+				return identity.Result{Status: "verified", Account: "example-account", ARN: "example-arn"}, nil
+			}
+		}
+		return identity.Result{}, errors.New("AssumeRole was not selected")
+	})
+	output := &bytes.Buffer{}
+	command.SetOut(output)
+	command.SetErr(output)
+	command.SetArgs([]string{"--profile", "role"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !called {
+		t.Fatal("identity verifier was not called")
+	}
+	for _, expected := range []string{"assume-role", "STATUS   verified", "ACCOUNT  example-account", "ARN      example-arn"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("output does not contain %q: %s", expected, output.String())
+		}
+	}
+	for _, forbidden := range []string{"example-access-key", "example-secret-key", "example-role"} {
+		if strings.Contains(output.String(), forbidden) {
+			t.Fatalf("output contains forbidden value %q: %s", forbidden, output.String())
+		}
+	}
+}
+
 func TestInspectPreservesAnalysisOnSTSFailure(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(root, "missing-config"))

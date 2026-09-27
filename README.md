@@ -12,7 +12,7 @@
 
 Version 0.2.0 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
 
-Version 0.2.0 adds modern `sso_session` and legacy inline IAM Identity Center / SSO profiles to the existing environment, shared-file, profile-selection, reasoning, and optional STS verification support. Complex AssumeRole chains and full `credential_process` support remain deferred.
+Version 0.2.0 adds modern `sso_session` and legacy inline IAM Identity Center / SSO profiles to the existing environment, shared-file, profile-selection, reasoning, and optional STS verification support. The current development milestone adds one-hop AssumeRole profiles using `role_arn` and a direct `source_profile` backed by static or SSO credentials. Nested role chains and full `credential_process` support remain deferred.
 
 ## Supported platforms
 
@@ -74,6 +74,8 @@ REASON   STS verification disabled
 ```
 
 Credential values, profile names, and secret material are never printed. When STS verification is enabled, only the effective Account ID and ARN are added to the output. See [SPEC.md](SPEC.md).
+
+For a supported AssumeRole profile, analysis reports the selected `assume-role` entry and a separate `source-profile` entry describing whether the direct source resolves through static or SSO credentials. The AWS SDK for Go v2 performs role assumption only when STS verification is enabled. `--no-sts` remains strictly offline and does not retrieve source credentials or call AssumeRole.
 
 ## References
 
