@@ -48,6 +48,50 @@ func TestInspectSkipsSTS(t *testing.T) {
 	}
 }
 
+func TestInspectNoSTSSkipsAllSSOCredentialActivity(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config")
+	config := "[profile example]\n" +
+		"sso_session = example-session\n" +
+		"sso_account_id = 000000000000\n" +
+		"sso_role_name = ExampleRole\n" +
+		"[sso-session example-session]\n" +
+		"sso_start_url = https://example.invalid/start\n" +
+		"sso_region = example-region\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AWS_CONFIG_FILE", configPath)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(root, "missing-credentials"))
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_PROFILE", "example")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
+
+	called := false
+	command := newInspectCommandWithVerifier(func(context.Context, analyze.Options, analyze.Result) (identity.Result, error) {
+		called = true
+		return identity.Result{}, errors.New("must not be called")
+	})
+	output := &bytes.Buffer{}
+	command.SetOut(output)
+	command.SetErr(output)
+	command.SetArgs([]string{"--no-sts"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if called {
+		t.Fatal("credential construction or STS verifier was called")
+	}
+	for _, expected := range []string{"selected  shared-config", "sso", "STATUS   skipped"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("output does not contain %q: %s", expected, output.String())
+		}
+	}
+}
+
 func TestInspectPreservesAnalysisOnSTSFailure(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("AWS_CONFIG_FILE", filepath.Join(root, "missing-config"))

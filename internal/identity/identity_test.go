@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"github.com/k-taketani-job/aws-cred-trace/internal/credentials"
 )
 
 type fakeCaller struct {
@@ -41,6 +42,7 @@ func TestVerify(t *testing.T) {
 		{name: "invalid credentials", err: &smithy.GenericAPIError{Code: "InvalidClientTokenId", Message: "sensitive detail"}, wantStatus: "unverified", wantError: ErrInvalid},
 		{name: "unauthorized", err: &smithy.GenericAPIError{Code: "AccessDenied", Message: "sensitive detail"}, wantStatus: "unverified", wantError: ErrUnauthorized},
 		{name: "network failure", err: fakeNetworkError{}, wantStatus: "unverified", wantError: ErrNetwork},
+		{name: "SSO session unavailable", err: credentials.ErrSSOSessionUnavailable, wantStatus: "unverified", wantError: ErrSSOSession},
 		{name: "other service error", err: &smithy.GenericAPIError{Code: "ExampleFailure", Message: "sensitive detail"}, wantStatus: "unverified", wantError: ErrVerification},
 		{name: "missing response fields", output: &sts.GetCallerIdentityOutput{}, wantStatus: "unverified", wantError: ErrVerification},
 	}

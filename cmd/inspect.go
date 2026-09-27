@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/k-taketani-job/aws-cred-trace/internal/analyze"
+	"github.com/k-taketani-job/aws-cred-trace/internal/credentials"
 	"github.com/k-taketani-job/aws-cred-trace/internal/identity"
 	"github.com/spf13/cobra"
 )
@@ -47,13 +48,13 @@ func newInspectCommandWithVerifier(verifier identityVerifier) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&profile, "profile", "", "Use a specific shared AWS profile")
-	command.Flags().BoolVar(&noSTS, "no-sts", false, "Skip STS identity verification")
+	command.Flags().BoolVar(&noSTS, "no-sts", false, "Skip credential retrieval and all network verification")
 
 	return command
 }
 
 func verifyIdentity(ctx context.Context, options analyze.Options, result analyze.Result) (identity.Result, error) {
-	provider, err := analyze.CredentialProvider(ctx, options, result)
+	provider, err := credentials.Provider(ctx, options, result)
 	if err != nil {
 		return identity.Result{Status: "unverified", Reason: "selected credentials are unavailable"}, err
 	}

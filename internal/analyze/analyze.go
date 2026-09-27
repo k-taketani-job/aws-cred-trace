@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -24,9 +23,11 @@ var (
 	// ErrNoCredentials indicates that no supported credential source was found.
 	ErrNoCredentials = errors.New("no supported credentials found")
 	// ErrUnsupportedProvider indicates that resolving credentials would require an unsupported provider.
-	ErrUnsupportedProvider = errors.New("credential resolution requires a provider unsupported in v0.1")
+	ErrUnsupportedProvider = errors.New("credential resolution requires a provider unsupported in v0.2")
 	// ErrProfileNotFound indicates that a selected named profile is absent from both shared files.
 	ErrProfileNotFound = errors.New("selected profile was not found")
+	// ErrInvalidSSOConfiguration indicates that the selected SSO profile cannot provide AWS credentials.
+	ErrInvalidSSOConfiguration = errors.New("selected SSO profile is incomplete or invalid")
 )
 
 // Finding is a value-free explanation of one credential source.
@@ -95,51 +96,6 @@ func selectRegion(environment map[string]string) string {
 	return environment["AWS_DEFAULT_REGION"]
 }
 
-// CredentialProvider returns only the supported static provider selected by Analyze.
-// It deliberately avoids the SDK default credential chain so unsupported providers
-// and metadata endpoints cannot be invoked.
-func CredentialProvider(ctx context.Context, options Options, result Result) (aws.CredentialsProvider, error) {
-	selected := ""
-	for _, finding := range result.Findings {
-		if finding.State == StateSelected {
-			selected = finding.Source
-			break
-		}
-	}
-
-	var credentials aws.Credentials
-	switch selected {
-	case "environment":
-		credentials = aws.Credentials{
-			AccessKeyID:     options.Environment["AWS_ACCESS_KEY_ID"],
-			SecretAccessKey: options.Environment["AWS_SECRET_ACCESS_KEY"],
-			SessionToken:    options.Environment["AWS_SESSION_TOKEN"],
-			Source:          "environment",
-		}
-	case "shared-credentials":
-		shared, err := loadSharedConfig(ctx, options.CredentialsPath, result.Profile, false)
-		if err != nil {
-			return nil, ErrNoCredentials
-		}
-		credentials = shared.Credentials
-	case "shared-config":
-		shared, err := loadSharedConfig(ctx, options.ConfigPath, result.Profile, true)
-		if err != nil {
-			return nil, ErrNoCredentials
-		}
-		credentials = shared.Credentials
-	default:
-		return nil, ErrNoCredentials
-	}
-
-	if !credentials.HasKeys() {
-		return nil, ErrNoCredentials
-	}
-	return aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-		return credentials, nil
-	}), nil
-}
-
 // Analyze determines supported credential-source precedence without retrieving credentials.
 func Analyze(ctx context.Context, options Options) (Result, error) {
 	profile, profileSource := selectProfile(options)
@@ -172,8 +128,8 @@ func Analyze(ctx context.Context, options Options) (Result, error) {
 	)
 	result.Findings = append(result.Findings, credentialsFinding)
 
-	configFinding, configSelected := configFileFinding(sharedConfig, environmentSelected, credentialsSelected)
-	result.Findings = append(result.Findings, configFinding)
+	configFindings, configSelected := configFileFindings(sharedConfig, environmentSelected, credentialsSelected)
+	result.Findings = append(result.Findings, configFindings...)
 
 	if environmentSelected || credentialsSelected || configSelected {
 		return result, nil
@@ -223,6 +179,8 @@ type fileCandidate struct {
 	exists      bool
 	profile     bool
 	static      bool
+	sso         bool
+	ssoMode     string
 	unsupported string
 	region      string
 }
@@ -256,6 +214,10 @@ func loadSharedFile(ctx context.Context, path, profile string, configFile bool) 
 		region:  shared.Region,
 	}
 	if configFile {
+		candidate.sso, candidate.ssoMode = ssoType(shared)
+		if candidate.sso && (shared.SSOAccountID == "" || shared.SSORoleName == "") {
+			return candidate, ErrInvalidSSOConfiguration
+		}
 		candidate.unsupported = unsupportedType(shared)
 	}
 	return candidate, nil
@@ -279,13 +241,21 @@ func unsupportedType(shared awsconfig.SharedConfig) string {
 		return "credential-process"
 	case shared.RoleARN != "" || shared.SourceProfileName != "" || shared.CredentialSource != "":
 		return "assume-role"
-	case shared.SSOSession != nil || shared.SSOSessionName != "" || shared.SSOStartURL != "" || shared.SSORegion != "":
-		return "sso"
 	case shared.WebIdentityTokenFile != "":
 		return "web-identity"
 	default:
 		return ""
 	}
+}
+
+func ssoType(shared awsconfig.SharedConfig) (bool, string) {
+	if shared.SSOSession != nil || shared.SSOSessionName != "" {
+		return true, "modern"
+	}
+	if shared.SSOStartURL != "" || shared.SSORegion != "" || shared.SSOAccountID != "" || shared.SSORoleName != "" {
+		return true, "legacy"
+	}
+	return false, ""
 }
 
 func staticFinding(source string, candidate fileCandidate, higherSelected bool, shadowReason string) (Finding, bool) {
@@ -304,14 +274,14 @@ func staticFinding(source string, candidate fileCandidate, higherSelected bool, 
 	return Finding{State: StateSelected, Source: source, Type: "static", Reason: "complete static credential pair"}, true
 }
 
-func configFileFinding(candidate fileCandidate, environmentSelected, credentialsSelected bool) (Finding, bool) {
+func configFileFindings(candidate fileCandidate, environmentSelected, credentialsSelected bool) ([]Finding, bool) {
 	if candidate.unsupported != "" && !candidate.static {
-		return Finding{
+		return []Finding{{
 			State:  StateIgnored,
 			Source: "shared-config",
 			Type:   candidate.unsupported,
 			Reason: unsupportedReason(environmentSelected || credentialsSelected),
-		}, false
+		}}, false
 	}
 
 	higherSelected := environmentSelected || credentialsSelected
@@ -319,14 +289,32 @@ func configFileFinding(candidate fileCandidate, environmentSelected, credentials
 	if environmentSelected {
 		reason = "environment credentials take precedence"
 	}
-	return staticFinding("shared-config", candidate, higherSelected, reason)
+	staticResult, staticSelected := staticFinding("shared-config", candidate, higherSelected, reason)
+	if !candidate.sso {
+		return []Finding{staticResult}, staticSelected
+	}
+
+	ssoState := StateSelected
+	ssoReason := candidate.ssoMode + " SSO profile selected"
+	if higherSelected {
+		ssoState = StateShadowed
+		ssoReason = reason
+	} else if staticSelected {
+		ssoState = StateShadowed
+		ssoReason = "static credentials in the selected profile take precedence"
+	}
+	ssoFinding := Finding{State: ssoState, Source: "shared-config", Type: "sso", Reason: ssoReason}
+	if candidate.static {
+		return []Finding{staticResult, ssoFinding}, staticSelected
+	}
+	return []Finding{ssoFinding}, ssoState == StateSelected
 }
 
 func unsupportedReason(higherSelected bool) string {
 	if higherSelected {
 		return "not evaluated because a supported higher-precedence source is selected"
 	}
-	return "unsupported in v0.1; not executed"
+	return "unsupported in v0.2; not executed"
 }
 
 func invalidFileFinding(source string) Finding {

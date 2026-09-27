@@ -11,9 +11,15 @@
 - Test that credential secrets never appear in output
 - Add CI validation for `windows-latest`, `macos-latest`, and `ubuntu-latest`
 
-## After v0.1: Provider expansion
+## v0.2.0: IAM Identity Center / SSO
 
-- Trace AWS IAM Identity Center / SSO selection and session state
+- Trace modern `sso_session` and legacy inline SSO profile selection
+- Delegate cached-token refresh and role credential retrieval to AWS SDK for Go v2
+- Report missing or expired sessions without exposing token or credential material
+- Guarantee that `--no-sts` performs no credential retrieval or network authentication
+
+## After v0.2.0: Provider expansion
+
 - Trace AssumeRole and `source_profile` chains
 - Diagnose `credential_process` safely
 - Add Web Identity, ECS, and EC2 Instance Metadata analysis
