@@ -58,19 +58,19 @@ Authoritative references:
 
 ## Output
 
-Text output contains the profile and its selection source, candidate state/source/reason, the SDK provider, and identity verification result.
+Text output contains the profile selection source, candidate state/source/type/reason, and identity verification result.
 
 ```text
-PROFILE  example-profile  (AWS_PROFILE)
-STATUS    SOURCE                                  REASON
-ignored   environment                             incomplete: secret access key is not set
-selected  ~/.aws/credentials [example-profile]    complete static credential pair
-shadowed  ~/.aws/config [example-profile]          same keys are overridden by credentials file
+CREDENTIAL_SOURCE_ANALYSIS
+PROFILE_SOURCE  AWS_PROFILE
+STATUS    SOURCE              TYPE                 REASON
+ignored   environment         static               credential variables are not set
+selected  shared-credentials  static               complete static credential pair
+ignored   shared-config       static               no supported static credentials
 
-PROVIDER  shared-profile-static
-IDENTITY  verified
-Account   <REDACTED>
-Arn       <REDACTED>
+IDENTITY_VERIFICATION
+STATUS   skipped
+REASON   STS verification disabled
 ```
 
 Documentation and test examples must use placeholders, never real credentials, Account IDs, ARNs, user IDs, usernames, or tokens.

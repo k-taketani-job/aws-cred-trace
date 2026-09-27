@@ -22,6 +22,5 @@
 
 - JSON output
 - More granular machine-readable exit codes
-- Cross-platform release packaging and automation
 
 Priorities may change after v0.1 behavior and security guarantees are validated.
