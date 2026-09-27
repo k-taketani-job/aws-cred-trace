@@ -5,25 +5,37 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  release:
-    name: Build and publish release artifacts
+  build:
+    name: Build release artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       CGO_ENABLED: "0"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify tag target is reachable from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "$GITHUB_REF")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Build release binaries
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_windows_amd64.exe .
           GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_windows_arm64.exe .
@@ -31,10 +43,84 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_darwin_arm64 .
           GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_linux_amd64 .
           GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/aws-cred-trace_linux_arm64 .
-      - name: Generate checksums
-        working-directory: dist
-        run: sha256sum aws-cred-trace_* > checksums.txt
-      - name: Upload release artifacts
+      - name: Generate and validate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          binaries=(
+            aws-cred-trace_windows_amd64.exe
+            aws-cred-trace_windows_arm64.exe
+            aws-cred-trace_darwin_amd64
+            aws-cred-trace_darwin_arm64
+            aws-cred-trace_linux_amd64
+            aws-cred-trace_linux_arm64
+          )
+          for binary in "${binaries[@]}"; do
+            test -f "dist/$binary"
+          done
+          (
+            cd dist
+            sha256sum "${binaries[@]}" > checksums.txt
+          )
+          test "$(wc -l < dist/checksums.txt)" -eq "${#binaries[@]}"
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 7
+      - name: Store release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  attest:
+    name: Attest release binaries
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: dist
+      - name: Generate artifact attestations
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        with:
+          subject-path: dist/aws-cred-trace_*
+      - name: Verify every binary attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          binaries=(
+            aws-cred-trace_windows_amd64.exe
+            aws-cred-trace_windows_arm64.exe
+            aws-cred-trace_darwin_amd64
+            aws-cred-trace_darwin_arm64
+            aws-cred-trace_linux_amd64
+            aws-cred-trace_linux_arm64
+          )
+          for binary in "${binaries[@]}"; do
+            gh attestation verify "dist/$binary" --repo "$GITHUB_REPOSITORY"
+          done
+
+  publish:
+    name: Publish GitHub Release
+    needs: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish release artifacts
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*

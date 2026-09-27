@@ -10,7 +10,7 @@
 
 ## Project status
 
-Version 0.1.0 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
+Version 0.1.1 is available from [GitHub Releases](https://github.com/k-taketani-job/aws-cred-trace/releases).
 
 The v0.1 scope covers environment credentials, `~/.aws/config`, `~/.aws/credentials`, profile resolution through `--profile`, `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, or `default`, `selected` / `shadowed` / `ignored` reasoning, and effective identity verification with `sts:GetCallerIdentity`. Full SSO, complex AssumeRole chains, and full `credential_process` support are deferred.
 
@@ -43,6 +43,12 @@ go install github.com/k-taketani-job/aws-cred-trace@latest
 ```
 
 Each release includes `checksums.txt`. Verify the downloaded binary with `Get-FileHash` on Windows, `shasum -a 256 -c checksums.txt` on macOS, or `sha256sum -c checksums.txt` on Linux.
+
+Release binaries also include GitHub Artifact Attestations. Verify provenance with GitHub CLI:
+
+```console
+gh attestation verify <artifact> --repo k-taketani-job/aws-cred-trace
+```
 
 ## Usage
 
